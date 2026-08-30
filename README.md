@@ -24,21 +24,21 @@ rememory 的核心是**数据铁律**：
 
 ## 架构
 
-```
-聊天记录导出 (QQ txt / 微信 json)
-        │  tools/parse_chat.py  →  data/messages_*.jsonl
-        ▼
-风格量化   service/stats_style.py  →  长度/标点/语气/连发/高频词
-        ▼
-人设      persona/persona.md  (5 层结构，你手写)
-        │  persona/gen_system_prompt.py  →  persona/system_prompt.txt
-        ▼
-记忆检索   BM25 (rank-bm25 + jieba)  把历史聊天切块做召回
-        ▼
-机器人     service/bot.py (QQ / OneBot 11)   service/wechat_bot.py (微信 / ilink)
-        │  LLM: 任意 Anthropic 兼容接口 (智谱 GLM / DeepSeek 等)
-        ▼
-持续调优   service/check_quality.py  对比基准，回写 persona 修正
+```mermaid
+flowchart TB
+    A["聊天记录导出<br/>QQ txt / 微信 json"] --> B["tools/parse_chat.py<br/>→ data/messages_*.jsonl"]
+    B --> C["service/stats_style.py<br/>风格量化：长度/标点/语气/连发/高频词"]
+    C --> D["persona/persona.md<br/>5 层结构 + 数据铁律"]
+    D --> E["persona/gen_system_prompt.py<br/>→ system_prompt.txt"]
+    B --> F["BM25 记忆索引<br/>jieba + rank-bm25"]
+    E --> G["LLM<br/>Anthropic 兼容接口<br/>智谱 GLM / DeepSeek"]
+    F --> G
+    G --> H["service/bot.py — QQ<br/>OneBot 11 / NapCat"]
+    G --> I["service/wechat_bot.py — 微信<br/>ilink API"]
+    H --> J["data/chatlog_*.jsonl<br/>聊天落盘"]
+    I --> J
+    J --> K["service/check_quality.py<br/>体检对比基准"]
+    K -.->|"跑偏 → 回写 Correction 层"| D
 ```
 
 ## 目录结构
