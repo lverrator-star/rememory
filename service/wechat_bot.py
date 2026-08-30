@@ -215,6 +215,8 @@ def main():
                 buf = new_buf
                 save_buf(buf)
             msgs = resp.get("msgs") or []
+            # 收集本批所有文字消息（可能含积压的多条）
+            incoming = []  # (from_user, ctx_token, text)
             for m in msgs:
                 from_user = m.get("from_user_id") or ""
                 ctx_token = m.get("context_token") or ""
@@ -223,16 +225,35 @@ def main():
                     if item.get("type") == 1:
                         text += item.get("text_item", {}).get("text", "")
                 text = text.strip()
-                if not text:
-                    continue
-                print(f"[chat] {from_user}: {text}")
-                append_chatlog("他", text)
+                if text:
+                    incoming.append((from_user, ctx_token, text))
+
+            if not incoming:
+                continue
+
+            # 按用户分组，每个用户只回最新一条。
+            # 关键：LLM 慢时消息会积压，若逐条回复会排出一长串“迟到”回复、越追越乱；
+            # 真实的人面对连续几条消息，也只会接最后一句。
+            by_user = {}
+            for from_user, ctx_token, text in incoming:
+                by_user.setdefault(from_user, []).append((ctx_token, text))
+
+            for from_user, user_msgs in by_user.items():
+                for ctx_token, text in user_msgs:
+                    print(f"[chat] {from_user}: {text}")
+                    append_chatlog("他", text)
+
                 hist = sessions.setdefault(from_user, deque(maxlen=MAX_HISTORY))
-                reply = call_llm(list(hist), text)
+                # 中间被跳过的消息只作上下文，不单独回复
+                for ctx_token, text in user_msgs[:-1]:
+                    hist.append((text, ""))
+                ctx_token, latest = user_msgs[-1]
+
+                reply = call_llm(list(hist), latest)
                 if not reply:
                     reply = random.choice(FALLBACKS)
                     print("[llm] 重试后仍无回复，用兜底话术")
-                hist.append((text, reply))
+                hist.append((latest, reply))
                 # 不秒回：随机打字延迟
                 time.sleep(random.uniform(0.8, 2.2))
                 for piece in split_reply(reply):
