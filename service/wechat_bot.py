@@ -8,9 +8,11 @@
 import base64
 import json
 import os
+import queue
 import random
 import re
 import secrets
+import threading
 import time
 from collections import deque
 from datetime import datetime
@@ -201,8 +203,39 @@ def split_reply(reply):
 # ---------------- 主循环 ----------------
 def main():
     buf = load_buf()
-    sessions = {}  # from_user_id -> deque[(user, assistant)]
+    sessions = {}  # from_user_id -> deque[(user, assistant)]，只在 worker 线程里读写
     print(f"[wx] 开始轮询 ilink（buf 长度 {len(buf)}）")
+
+    q = queue.Queue()  # 待回复队列: (from_user, ctx_token, text)
+
+    def worker():
+        """消费队列，按 FIFO 顺序逐条生成回复并发送。单 worker 保证顺序。"""
+        while True:
+            from_user, ctx_token, text = q.get()
+            try:
+                hist = sessions.setdefault(from_user, deque(maxlen=MAX_HISTORY))
+                reply = call_llm(list(hist), text)
+                if not reply:
+                    reply = random.choice(FALLBACKS)
+                    print("[llm] 重试后仍无回复，用兜底话术")
+                hist.append((text, reply))
+                # 不秒回：随机打字延迟
+                time.sleep(random.uniform(0.8, 2.2))
+                for piece in split_reply(reply):
+                    print(f"[chat] 角色: {piece}")
+                    append_chatlog("她", piece)
+                    ok = send_text(from_user, piece, ctx_token)
+                    if not ok:
+                        print("[wx] 发送失败")
+                    time.sleep(random.uniform(0.4, 1.2))
+            except Exception as e:
+                print(f"[worker] 处理消息出错: {e}")
+            finally:
+                q.task_done()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    # 主线程只负责轮询收消息、按到达顺序入队，永不阻塞在 LLM 上
     while True:
         try:
             resp = get_updates(buf)
@@ -215,8 +248,6 @@ def main():
                 buf = new_buf
                 save_buf(buf)
             msgs = resp.get("msgs") or []
-            # 收集本批所有文字消息（可能含积压的多条）
-            incoming = []  # (from_user, ctx_token, text)
             for m in msgs:
                 from_user = m.get("from_user_id") or ""
                 ctx_token = m.get("context_token") or ""
@@ -225,44 +256,11 @@ def main():
                     if item.get("type") == 1:
                         text += item.get("text_item", {}).get("text", "")
                 text = text.strip()
-                if text:
-                    incoming.append((from_user, ctx_token, text))
-
-            if not incoming:
-                continue
-
-            # 按用户分组，每个用户只回最新一条。
-            # 关键：LLM 慢时消息会积压，若逐条回复会排出一长串“迟到”回复、越追越乱；
-            # 真实的人面对连续几条消息，也只会接最后一句。
-            by_user = {}
-            for from_user, ctx_token, text in incoming:
-                by_user.setdefault(from_user, []).append((ctx_token, text))
-
-            for from_user, user_msgs in by_user.items():
-                for ctx_token, text in user_msgs:
-                    print(f"[chat] {from_user}: {text}")
-                    append_chatlog("他", text)
-
-                hist = sessions.setdefault(from_user, deque(maxlen=MAX_HISTORY))
-                # 中间被跳过的消息只作上下文，不单独回复
-                for ctx_token, text in user_msgs[:-1]:
-                    hist.append((text, ""))
-                ctx_token, latest = user_msgs[-1]
-
-                reply = call_llm(list(hist), latest)
-                if not reply:
-                    reply = random.choice(FALLBACKS)
-                    print("[llm] 重试后仍无回复，用兜底话术")
-                hist.append((latest, reply))
-                # 不秒回：随机打字延迟
-                time.sleep(random.uniform(0.8, 2.2))
-                for piece in split_reply(reply):
-                    print(f"[chat] 角色: {piece}")
-                    append_chatlog("她", piece)
-                    ok = send_text(from_user, piece, ctx_token)
-                    if not ok:
-                        print("[wx] 发送失败")
-                    time.sleep(random.uniform(0.4, 1.2))
+                if not text:
+                    continue
+                print(f"[chat] {from_user}: {text}")
+                append_chatlog("他", text)
+                q.put((from_user, ctx_token, text))
         except httpx.HTTPError as e:
             print(f"[wx] 网络错误: {e}，5秒后重试")
             time.sleep(5)
