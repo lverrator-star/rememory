@@ -1,0 +1,8 @@
+{
+  "model": "GLM-5.3-Flash",
+  "owner_qq": 0,
+  "napcat_ws": "ws://127.0.0.1:3001",
+  "max_turns": 10,
+  "memory_topk": 4,
+  "max_tokens": 2048
+}

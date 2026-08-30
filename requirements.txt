@@ -1,0 +1,4 @@
+httpx
+jieba
+rank-bm25
+websockets
